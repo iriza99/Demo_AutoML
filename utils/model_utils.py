@@ -1,8 +1,9 @@
 from autogluon.tabular import TabularPredictor, TabularDataset
+from autogluon.timeseries import TimeSeriesDataFrame, TimeSeriesPredictor
 import os
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  
+matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -11,6 +12,7 @@ import numpy as np
 import shap
 from datetime import datetime
 import io
+import json
 
 from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score,
@@ -144,6 +146,72 @@ def generate_metric_plot(metric_name, y_true=None, y_pred=None, y_proba=None, cl
     return image_base64
 
 # Train an AutoGluon model and return training results and plots
+def _detect_datetime_column(df, target_column):
+    """Return the name of a datetime-like column (excluding the target) if present."""
+    for column in df.columns:
+        if column == target_column:
+            continue
+
+        series = df[column]
+
+        if pd.api.types.is_datetime64_any_dtype(series):
+            return column
+
+        if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+            parsed = pd.to_datetime(series, errors="coerce", utc=True)
+            if parsed.notna().mean() > 0.8:
+                df[column] = parsed
+                return column
+
+    return None
+
+
+def _is_time_series_dataset(df, target_column):
+    """Heuristically determine if the dataset represents a time series."""
+    timestamp_col = _detect_datetime_column(df, target_column)
+    if not timestamp_col:
+        return None
+
+    non_target_columns = set(df.columns) - {target_column}
+
+    if non_target_columns.issubset({timestamp_col, "item_id"}):
+        return timestamp_col
+
+    return None
+
+
+def _save_model_metadata(save_path, metadata):
+    metadata_path = os.path.join(save_path, "model_metadata.json")
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+
+def _load_model_metadata(model_path):
+    metadata_path = os.path.join(model_path, "model_metadata.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def _plot_time_series_forecast(actual_series, forecast_series, title):
+    plt.figure(figsize=(10, 6))
+    actual_series.plot(label="Actual", marker="o")
+    forecast_series.plot(label="Forecast", marker="x")
+    plt.title(title)
+    plt.xlabel("Timestamp")
+    plt.ylabel("Target")
+    plt.legend()
+    plt.tight_layout()
+
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png')
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+    plt.close()
+    return image_base64
+
+
 def train_model(df, target_column, time_limit, save_path, stop_event=None):
     try:
         save_path = os.path.abspath(save_path)
@@ -153,6 +221,18 @@ def train_model(df, target_column, time_limit, save_path, stop_event=None):
 
         if df[target_column].isnull().any():
             raise UserError("error_missing_target_values")
+
+        timestamp_col = _is_time_series_dataset(df, target_column)
+
+        if timestamp_col:
+            return train_time_series_model(
+                df=df,
+                target_column=target_column,
+                timestamp_col=timestamp_col,
+                time_limit=time_limit,
+                save_path=save_path,
+                stop_event=stop_event,
+            )
 
         predictor = TabularPredictor(label=target_column, path=save_path)
 
@@ -259,6 +339,95 @@ def train_model(df, target_column, time_limit, save_path, stop_event=None):
     except Exception:
         raise UserError("error_unexpected_training")
 
+
+def train_time_series_model(df, target_column, timestamp_col, time_limit, save_path, stop_event=None):
+    try:
+        save_path = os.path.abspath(save_path)
+
+        plot_dir = os.path.join(save_path, "plot_train_results")
+        os.makedirs(plot_dir, exist_ok=True)
+
+        if df[target_column].isnull().any():
+            raise UserError("error_missing_target_values")
+
+        df = df.copy()
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", utc=True)
+
+        if df[timestamp_col].isnull().any():
+            raise UserError("error_invalid_timestamp")
+
+        if "item_id" not in df.columns:
+            df["item_id"] = "series_1"
+
+        df = df.sort_values(["item_id", timestamp_col])
+
+        ts_data = TimeSeriesDataFrame.from_data_frame(
+            df,
+            id_column="item_id",
+            timestamp_column=timestamp_col,
+        )
+
+        predictor = TimeSeriesPredictor(
+            target=target_column,
+            path=save_path,
+            prediction_length=1,
+        )
+
+        if stop_event and stop_event.is_set():
+            raise UserError("training_interrupted")
+
+        predictor.fit(train_data=ts_data, time_limit=time_limit)
+
+        if stop_event and stop_event.is_set():
+            raise UserError("training_interrupted")
+
+        forecast = predictor.predict(ts_data)
+        metrics = predictor.evaluate(ts_data, predictions=forecast)
+        leaderboard = predictor.leaderboard(ts_data, silent=True)
+
+        first_item = ts_data.index.get_level_values("item_id").unique()[0]
+        actual_series = ts_data.loc[first_item][target_column]
+        forecast_series = forecast.loc[first_item][target_column]
+
+        forecast_plot = _plot_time_series_forecast(
+            actual_series,
+            forecast_series,
+            "Pronóstico vs valores reales (primer identificador)",
+        )
+
+        summary = "Tâche détectée : série temporelle\n\n"
+        summary += f"Modèle sélectionné : {predictor.model_best}\n"
+        summary += f"Temps d'entraînement : {float(leaderboard['fit_time'].sum()):.2f} seconds\n\n"
+        summary += "Principales métriques (plus petit est meilleur) :\n"
+        for metric_name, metric_value in metrics.items():
+            summary += f"- {metric_name} : {metric_value:.4f}\n"
+
+        _save_model_metadata(
+            save_path,
+            {
+                "type": "time_series",
+                "timestamp_column": timestamp_col,
+                "item_id_column": "item_id",
+                "prediction_length": predictor.prediction_length,
+            },
+        )
+
+        return {
+            "best_model": predictor.model_best,
+            "train_time": float(leaderboard["fit_time"].sum()),
+            "task_type": "time_series",
+            "metrics": metrics,
+            "feature_importance_plot": forecast_plot,
+            "model_path": save_path,
+            "leaderboard": leaderboard.to_dict(orient="records"),
+            "summary_LLM": summary,
+        }
+
+    except UserError:
+        raise
+    except Exception:
+        raise UserError("error_unexpected_training")
+
 # Generate SHAP summary plot for model explanations
 def generate_shap_plot(model_path, df, target_column):
     try:
@@ -356,6 +525,11 @@ def plot_prediction_confidence(y_proba_df):
 # Predict using a trained model and generate relevant plots
 def predict_model(csv_path, model_path):
     try:
+        metadata = _load_model_metadata(model_path)
+
+        if metadata and metadata.get("type") == "time_series":
+            return predict_time_series(csv_path, model_path, metadata)
+
         predictor = TabularPredictor.load(model_path)
 
         ext = os.path.splitext(csv_path)[1].lower()
@@ -413,6 +587,79 @@ def predict_model(csv_path, model_path):
             }
 
         return output_data
+
+    except UserError:
+        raise
+    except Exception:
+        raise UserError("error_unexpected_prediction")
+
+
+def _load_dataset_for_prediction(csv_path):
+    ext = os.path.splitext(csv_path)[1].lower()
+    if ext == '.csv':
+        return pd.read_csv(csv_path)
+    elif ext in ['.xls', '.xlsx', '.xlsm']:
+        return pd.read_excel(csv_path)
+    elif ext == '.arff':
+        import arff
+        with open(csv_path, 'r') as f:
+            arff_data = arff.load(f)
+        return pd.DataFrame(arff_data['data'], columns=[a[0] for a in arff_data['attributes']])
+    else:
+        raise UserError("error_unsupported_file_format")
+
+
+def predict_time_series(csv_path, model_path, metadata):
+    try:
+        df = _load_dataset_for_prediction(csv_path)
+        predictor = TimeSeriesPredictor.load(model_path)
+
+        timestamp_col = metadata.get("timestamp_column")
+        item_id_col = metadata.get("item_id_column", "item_id")
+        target_column = predictor.target
+
+        if target_column not in df.columns:
+            raise UserError("error_missing_target_column")
+
+        if timestamp_col not in df.columns:
+            raise UserError("error_invalid_timestamp")
+
+        df = df.copy()
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce", utc=True)
+
+        if df[timestamp_col].isnull().any():
+            raise UserError("error_invalid_timestamp")
+
+        if item_id_col not in df.columns:
+            df[item_id_col] = "series_1"
+
+        df = df.sort_values([item_id_col, timestamp_col])
+
+        ts_data = TimeSeriesDataFrame.from_data_frame(
+            df,
+            id_column=item_id_col,
+            timestamp_column=timestamp_col,
+        )
+
+        forecast = predictor.predict(ts_data)
+
+        forecast_reset = forecast.reset_index()
+        forecast_reset.rename(columns={target_column: "prediction"}, inplace=True)
+
+        plots = {}
+        first_item = ts_data.index.get_level_values(item_id_col).unique()[0]
+        actual_series = ts_data.loc[first_item][target_column]
+        forecast_series = forecast.loc[first_item][target_column]
+        plots["forecast"] = _plot_time_series_forecast(
+            actual_series,
+            forecast_series,
+            "Pronóstico de série temporelle",
+        )
+
+        return {
+            "predictions": forecast_reset.to_dict(orient="records"),
+            "plots": plots,
+        }
 
     except UserError:
         raise
