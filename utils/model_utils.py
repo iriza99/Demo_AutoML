@@ -382,7 +382,9 @@ def train_time_series_model(df, target_column, timestamp_col, time_limit, save_p
             raise UserError("training_interrupted")
 
         forecast = predictor.predict(ts_data)
-        metrics = predictor.evaluate(ts_data, predictions=forecast)
+        metrics_raw = predictor.evaluate(ts_data, predictions=forecast)
+        metrics = {metric_name: float(metric_value) for metric_name, metric_value in metrics_raw.items()}
+        metrics_formatted = {metric_name: {"value": metric_value} for metric_name, metric_value in metrics.items()}
         leaderboard = predictor.leaderboard(ts_data, silent=True)
 
         first_item = ts_data.index.get_level_values("item_id").unique()[0]
@@ -416,7 +418,8 @@ def train_time_series_model(df, target_column, timestamp_col, time_limit, save_p
             "best_model": predictor.model_best,
             "train_time": float(leaderboard["fit_time"].sum()),
             "task_type": "time_series",
-            "metrics": metrics,
+            "metrics": metrics_formatted,
+            "forecast_plot": forecast_plot,
             "feature_importance_plot": forecast_plot,
             "model_path": save_path,
             "leaderboard": leaderboard.to_dict(orient="records"),
