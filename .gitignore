@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment and config
+.env
+*.env
+
+# Application artifacts
+uploads/*
+!uploads/.gitkeep
+models/*
+!models/.gitkeep
+logs/*
+!logs/.gitkeep
+decompression/*
+!decompression/.gitkeep
+prediction/*
+!prediction/.gitkeep
+cleanup.log
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db

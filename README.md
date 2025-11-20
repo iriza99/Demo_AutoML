@@ -147,4 +147,16 @@ This assistant is designed to work with **non-technical users**.
 
 ---
 
+## Deploying to Hugging Face Spaces (Docker)
+
+The repository includes a `Dockerfile` so you can run the app in a Hugging Face Space using the **Docker** runtime.
+
+1. Create a new Space and choose **Docker** as the runtime.
+2. Upload the repository contents, including the `Dockerfile`, `requirements.txt`, and the application folders (`templates/`, `static/`, `utils/`). The empty folders `uploads/`, `models/`, `logs/`, `decompression/`, and `prediction/` are tracked with `.gitkeep` files so the app can write outputs at runtime.
+3. In the Space settings, add environment variables (e.g., `GROQ_API_KEY`) instead of committing secrets. The app automatically reads the `PORT` provided by the Space and binds to `0.0.0.0`.
+4. Build and start the Space. The default command in the `Dockerfile` is `python app.py`, which launches the Flask server on the injected port.
+
+If your Space needs additional system dependencies (for example, GPU drivers or visualization libraries), extend the `apt-get` section in the `Dockerfile` accordingly.
+
+
 

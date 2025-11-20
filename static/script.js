@@ -683,11 +683,12 @@ function renderTrainingResults(data) {
   lastTrainedModelPath = data.model_path;
   summaryResults["summary"] = data.summary_LLM;
   summaryResults["feature_importance_plot"] = data.feature_importance_plot;
+  summaryResults["forecast_plot"] = data.forecast_plot;
   summaryResults["metrics_plot"] = data.metrics;
   summaryResults["task_type"] = data.task_type;
   summaryResults["best_model"] = data.best_model;
   summaryResults["train_time"] = data.train_time;
-  dataSetPreview = data.markdown_preview; 
+  dataSetPreview = data.markdown_preview;
   const resultsDiv = document.getElementById('training-results');
   resultsDiv.innerHTML = `<h2 data-i18n="trainingResults">${t("trainingResults")}</h2>`;
 
@@ -704,19 +705,23 @@ function renderTrainingResults(data) {
       </div>
   `;
 
-  const metrics = data.metrics;
+  const metrics = data.metrics || {};
   let metricsHTML = '';
   let plotsHTML = `
       <div class="subsection">
         <h4 data-i18n="plots">${t("plots")}</h4>
   `;
 
+  const isTimeSeriesTask = data.task_type === "time_series";
+
   for (const metric in metrics) {
-    const value = metrics[metric].value;
-    const plotBase64 = metrics[metric].plot;
-    const plotHist = metrics[metric].plot_hist || null;
+    const metricData = metrics[metric];
+    const hasValueField = metricData && typeof metricData === "object" && metricData.value !== undefined;
+    const value = hasValueField ? metricData.value : metricData;
+    const plotBase64 = hasValueField ? metricData.plot : undefined;
+    const plotHist = hasValueField ? metricData.plot_hist || null : null;
     const metricLabel = metric.toUpperCase();
-    const formattedValue = value.toFixed(4);
+    const formattedValue = typeof value === "number" ? value.toFixed(4) : value;
 
     metricsHTML += `<tr><td>${metricLabel}</td><td>${formattedValue}</td></tr>`;
 
@@ -738,7 +743,16 @@ function renderTrainingResults(data) {
     }
   }
 
-  const metricSectionTitle = data.task_type === "regression" ? "Regression Metrics" : "Classification Metrics";
+  if (isTimeSeriesTask && data.forecast_plot) {
+    plotsHTML += `
+      <div class="plot-card">
+        <p><strong>Forecast vs Actual</strong></p>
+        <img src="data:image/png;base64,${data.forecast_plot}" alt="Forecast Plot" />
+      </div>
+    `;
+  }
+
+  const metricSectionTitle = data.task_type === "regression" ? "Regression Metrics" : isTimeSeriesTask ? "Time Series Metrics" : "Classification Metrics";
 
   summaryHTML += `
       <div class="subsection">
@@ -751,6 +765,10 @@ function renderTrainingResults(data) {
   `;
 
     if (data.leaderboard && Array.isArray(data.leaderboard)) {
+    const safeNumber = (value, decimals = 2) => {
+      return typeof value === "number" ? value.toFixed(decimals) : "N/A";
+    };
+
     const leaderboardHTML = `
       <div class="result-section" id="leaderboard-section">
         <h3 data-i18n="leaderboard">${t("leaderboard")}</h3>
@@ -768,9 +786,9 @@ function renderTrainingResults(data) {
               ${data.leaderboard.map(row => `
                 <tr>
                   <td>${row.model}</td>
-                  <td>${row.score_val.toFixed(4)}</td>
-                  <td>${row.fit_time.toFixed(2)}s</td>
-                  <td>${row.pred_time_val.toFixed(2)}s</td>
+                  <td>${safeNumber(row.score_val ?? row.score_test ?? row.score, 4)}</td>
+                  <td>${safeNumber(row.fit_time, 2)}s</td>
+                  <td>${safeNumber(row.pred_time_val ?? row.pred_time, 2)}s</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -786,34 +804,38 @@ function renderTrainingResults(data) {
   resultsDiv.innerHTML += summaryHTML;
 
   // -------- Model Explainability Section --------
-  let explainabilityHTML = `
-    <div class="result-section" id="model-explainability-section">
-      <h3 data-i18n="modelExplainability">${t("modelExplainability")}</h3>
-  `;
+  const shapAllowed = !isTimeSeriesTask;
 
-  if (data.feature_importance_plot) {
-    explainabilityHTML += `
-      <div class="plot-card">
-        <h4 data-i18n="featureImportance">${t("featureImportance")}</h4>
-        <img src="data:image/png;base64,${data.feature_importance_plot}" alt="Feature Importance Plot" />
-      </div>
+  if (shapAllowed) {
+    let explainabilityHTML = `
+      <div class="result-section" id="model-explainability-section">
+        <h3 data-i18n="modelExplainability">${t("modelExplainability")}</h3>
     `;
-  }
 
-  explainabilityHTML += `
-    <div class="button-container">
-      <div style="display: flex; align-items: center; gap: 15px;">
-        <button id="generate-shap-button" onclick="generateShapPlot()" class="generate-shap-button" data-i18n="generateShap">
-          ${t("generateShap")}
-        </button>
-        <div id="training-spinner-shap" class="spinner" style="display: none;"></div>
+    if (data.feature_importance_plot && !isTimeSeriesTask) {
+      explainabilityHTML += `
+        <div class="plot-card">
+          <h4 data-i18n="featureImportance">${t("featureImportance")}</h4>
+          <img src="data:image/png;base64,${data.feature_importance_plot}" alt="Feature Importance Plot" />
+        </div>
+      `;
+    }
+
+    explainabilityHTML += `
+      <div class="button-container">
+        <div style="display: flex; align-items: center; gap: 15px;">
+          <button id="generate-shap-button" onclick="generateShapPlot()" class="generate-shap-button" data-i18n="generateShap">
+            ${t("generateShap")}
+          </button>
+          <div id="training-spinner-shap" class="spinner" style="display: none;"></div>
+        </div>
       </div>
-    </div>
-    <div class="plot-card" id="shap-plots"></div>`;
+      <div class="plot-card" id="shap-plots"></div>`;
 
 
-  explainabilityHTML += `</div>`; // End Model Explainability
-  resultsDiv.innerHTML += explainabilityHTML;
+    explainabilityHTML += `</div>`; // End Model Explainability
+    resultsDiv.innerHTML += explainabilityHTML;
+  }
 
   // -------- Download Buttons --------
   resultsDiv.innerHTML += `

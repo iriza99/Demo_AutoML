@@ -80,6 +80,7 @@ PREDICTION_FOLDER = 'prediction'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 os.makedirs(PREDICTION_FOLDER, exist_ok=True)
+os.makedirs(DECOMPRESSION_FOLDER, exist_ok=True)
 
 # Flask app configuration
 app.config['ENV'] = os.getenv("FLASK_ENV", "production")
